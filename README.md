@@ -1,1 +1,1 @@
-bunun adını degistirip kendi hilesi gibi satanlarin anasini sikerim [ThunderClient]
+Büyük Keller icin gelistirilmistir gotu ölü olanlar icin
