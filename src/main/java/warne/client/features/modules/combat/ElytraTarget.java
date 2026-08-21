@@ -3,6 +3,8 @@ package warne.client.features.modules.combat;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractItemC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
@@ -18,24 +20,51 @@ import warne.client.utility.player.InventoryUtility;
 import warne.client.utility.player.PlayerUtility;
 import warne.client.utility.player.SearchInvResult;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class ElytraTarget extends Module {
 
+    /* ── ENUM ────────────────────────────────────────────────────────────── */
+
+    public enum BypassMode {
+        Off,
+        GrimAC,   // GCD hizalama + gürültü
+        Vulcan,   // Rotasyonu ≤N °/tick ile sınırla, zemin tick spoof
+        Matrix,   // Saldırı stagger + pozisyon öteleme gürültüsü
+        Intave    // Nadir paket + cinematic yumuşatma
+    }
+
+    public enum RotationAlgorithm {
+        Linear,     // Saf lerp
+        Bezier,     // İkinci derece Bezier eğrisi — doğal kavis
+        Cinematic   // Çok yavaş EMA — Intave / uzun mesafe için
+    }
+
+    public enum CritMode { Packet, Strict }
+
     /* ── ROCKET ─────────────────────────────────────────────────────────── */
     private final Setting<Boolean> rocketBoost      = new Setting<>("RocketBoost", true);
-    private final Setting<Boolean> instantFire      = new Setting<>("InstantFire", false,
+    private final Setting<Boolean> instantFire      = new Setting<>("InstantFire", true,
             v -> rocketBoost.getValue());
     private final Setting<Integer> rocketDelay      = new Setting<>("RocketDelay", 5, 0, 300,
             v -> rocketBoost.getValue() && !instantFire.getValue());
-    private final Setting<Integer> rocketBurst      = new Setting<>("RocketBurst", 2, 1, 10,
+    private final Setting<Integer> rocketBurst      = new Setting<>("RocketBurst", 1, 1, 5,
             v -> rocketBoost.getValue());
     private final Setting<Boolean> silentRockets    = new Setting<>("SilentRocketUsage", true,
             v -> rocketBoost.getValue());
     private final Setting<Boolean> autoSwitchRocket = new Setting<>("AutoSwitchRocket", true,
             v -> rocketBoost.getValue());
-    private final Setting<Boolean> alwaysBoost      = new Setting<>("AlwaysBoost", false,
+    private final Setting<Boolean> alwaysBoost      = new Setting<>("AlwaysBoost", true,
             v -> rocketBoost.getValue());
+
+    /* ── FAKE LAG ────────────────────────────────────────────────────────── */
+    private final Setting<Boolean> fakeLag     = new Setting<>("FakeLag", false);
+    private final Setting<Integer> lagTicks    = new Setting<>("LagTicks",    8, 2, 20,
+            v -> fakeLag.getValue());
+    private final Setting<Integer> lagInterval = new Setting<>("LagInterval", 3, 1, 10,
+            v -> fakeLag.getValue());
 
     /* ── HEDEF ──────────────────────────────────────────────────────────── */
     private final Setting<Float>   targetRange     = new Setting<>("TargetRange", 64f, 5f, 128f);
@@ -56,36 +85,159 @@ public final class ElytraTarget extends Module {
     /* ── KILIC ──────────────────────────────────────────────────────────── */
     private final Setting<Boolean> autoSharpestSword = new Setting<>("AutoSwitchToSharpestSword", true);
 
-    /* ── BYPASS ─────────────────────────────────────────────────────────── */
-    private final Setting<BypassMode> bypassMode      = new Setting<>("BypassMode", BypassMode.GrimAC);
-    private final Setting<Boolean>    rotationNoise   = new Setting<>("RotationNoise", true,
+    /* ── BYPASS TEMEL ───────────────────────────────────────────────────── */
+    private final Setting<BypassMode>        bypassMode    = new Setting<>("BypassMode", BypassMode.GrimAC);
+    private final Setting<RotationAlgorithm> rotAlgo       = new Setting<>("RotationAlgorithm", RotationAlgorithm.Bezier,
             v -> bypassMode.getValue() != BypassMode.Off);
-    private final Setting<Float>      noiseStrength   = new Setting<>("NoiseStrength", 0.12f, 0.01f, 0.8f,
+    private final Setting<Boolean>           rotationNoise = new Setting<>("RotationNoise", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+    private final Setting<Float>             noiseStrength = new Setting<>("NoiseStrength", 0.12f, 0.01f, 0.8f,
             v -> bypassMode.getValue() != BypassMode.Off && rotationNoise.getValue());
-    private final Setting<Boolean>    sendFullPacket  = new Setting<>("SendRotationPacket", true,
+    private final Setting<Boolean>           sendFullPacket = new Setting<>("SendRotationPacket", true,
             v -> bypassMode.getValue() != BypassMode.Off);
+
+    /* ── BYPASS GELİŞMİŞ ────────────────────────────────────────────────── */
+
+    // Bezier
+    private final Setting<Float> bezierOffset = new Setting<>(
+            "BezierControlOffset", 0.35f, 0.0f, 1.0f,
+            v -> bypassMode.getValue() != BypassMode.Off
+                    && rotAlgo.getValue() == RotationAlgorithm.Bezier);
+
+    // Cinematic EMA katsayısı
+    private final Setting<Float> cinematicAlpha = new Setting<>(
+            "CinematicAlpha", 0.06f, 0.01f, 0.20f,
+            v -> bypassMode.getValue() != BypassMode.Off
+                    && rotAlgo.getValue() == RotationAlgorithm.Cinematic);
+
+    // Vulcan rotasyon hız sınırı (°/tick)
+    private final Setting<Float> vulcanMaxRotSpeed = new Setting<>("VulcanMaxRotSpeed", 3.0f, 0.5f, 15.0f,
+            v -> bypassMode.getValue() == BypassMode.Vulcan);
+
+    // Matrix saldırı stagger (tick)
+    private final Setting<Integer> attackStagger = new Setting<>("AttackStaggerTicks", 3, 1, 8,
+            v -> bypassMode.getValue() == BypassMode.Matrix);
+
+    // Anti-flag cooldown
+    private final Setting<Boolean> antiFlag      = new Setting<>("AntiFlag", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+    private final Setting<Integer> flagCooldown  = new Setting<>("FlagCooldownTicks", 40, 10, 120,
+            v -> bypassMode.getValue() != BypassMode.Off && antiFlag.getValue());
+
+    // Swing spoof
+    private final Setting<Boolean> swingSpoof    = new Setting<>("SwingSpoof", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+    private final Setting<Integer> swingInterval = new Setting<>("SwingInterval", 14, 4, 60,
+            v -> bypassMode.getValue() != BypassMode.Off && swingSpoof.getValue());
+
+    // Timing jitter
+    private final Setting<Boolean> timingJitter = new Setting<>("TimingJitter", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+    private final Setting<Integer> jitterRange  = new Setting<>("JitterRangeMs", 18, 2, 60,
+            v -> bypassMode.getValue() != BypassMode.Off && timingJitter.getValue());
+
+    // Ground tick spoof (Vulcan crit bypass)
+    private final Setting<Boolean> groundTickSpoof = new Setting<>("GroundTickSpoof", true,
+            v -> autoCrit.getValue() && bypassMode.getValue() != BypassMode.Off);
+
+    // Packet coalesce
+    private final Setting<Boolean> packetCoalesce = new Setting<>("PacketCoalesce", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+
+    // Velocity cap
+    private final Setting<Boolean> velocityCap  = new Setting<>("VelocityCap", true,
+            v -> bypassMode.getValue() != BypassMode.Off);
+    private final Setting<Float>   maxVelDelta  = new Setting<>("MaxVelocityDelta", 0.08f, 0.01f, 0.30f,
+            v -> bypassMode.getValue() != BypassMode.Off && velocityCap.getValue());
 
     /* ── STATE ──────────────────────────────────────────────────────────── */
-    private final Timer rocketTimer = new Timer();
-    private final Timer critTimer   = new Timer();
+    private final Timer rocketTimer   = new Timer();
+    private final Timer critTimer     = new Timer();
+    private final Timer lagCycleTimer = new Timer();
 
-    private double  orbitAngle = 0;
-    private float   smoothX    = 0, smoothY = 0, smoothZ = 0;
-    private boolean orbitReady = false;
+    private final Deque<Packet<?>> lagQueue = new ArrayDeque<>();
+
+    // Orbit
+    private double  orbitAngle  = 0;
+    private float   smoothX     = 0, smoothY = 0, smoothZ = 0;
+    private boolean orbitReady  = false;
+
+    // Fake lag state
+    private boolean lagPhaseOn   = false;
+    private int     lagTickAccum = 0;
+
+    // Rotation delta cache
+    private float lastSentYaw   = Float.NaN;
+    private float lastSentPitch = Float.NaN;
+
+    // First tick rocket
+    private boolean firstTick = false;
+
+    // Anti-flag
+    private boolean flagged           = false;
+    private int     flagCooldownAccum = 0;
+
+    // Swing spoof
+    private int swingTickAccum = 0;
+
+    // Bezier control point
+    private float bezCtrlYaw   = Float.NaN;
+    private float bezCtrlPitch = Float.NaN;
+
+    // Cinematic smoothing
+    private float cinYaw   = Float.NaN;
+    private float cinPitch = Float.NaN;
+
+    // Packet coalesce
+    private PlayerMoveC2SPacket.Full pendingFullPacket = null;
+
+    // Velocity cap
+    private Vec3d prevVelocity = Vec3d.ZERO;
+
+    // Matrix stagger
+    private int matrixAttackTick = 0;
 
     public ElytraTarget() {
         super("ElytraTarget", Category.COMBAT);
     }
 
+    /* ═══════════════════════════════════════════════════════════════════════
+       LIFECYCLE
+    ═══════════════════════════════════════════════════════════════════════ */
+
     @Override
     public void onEnable() {
-        orbitReady = false;
-        orbitAngle = 0;
+        orbitReady        = false;
+        orbitAngle        = 0;
+        firstTick         = true;
+        lagPhaseOn        = false;
+        lagTickAccum      = 0;
+        lastSentYaw       = Float.NaN;
+        lastSentPitch     = Float.NaN;
+        flagged           = false;
+        flagCooldownAccum = 0;
+        swingTickAccum    = 0;
+        bezCtrlYaw        = Float.NaN;
+        bezCtrlPitch      = Float.NaN;
+        cinYaw            = Float.NaN;
+        cinPitch          = Float.NaN;
+        pendingFullPacket = null;
+        prevVelocity      = Vec3d.ZERO;
+        matrixAttackTick  = 0;
+        lagQueue.clear();
+        rocketTimer.reset();
+        lagCycleTimer.reset();
     }
 
     @Override
     public void onDisable() {
-        orbitReady = false;
+        orbitReady        = false;
+        firstTick         = false;
+        lagPhaseOn        = false;
+        lagTickAccum      = 0;
+        flagged           = false;
+        pendingFullPacket = null;
+        flushLagQueue();
     }
 
     /* ═══════════════════════════════════════════════════════════════════════
@@ -96,6 +248,30 @@ public final class ElytraTarget extends Module {
     public void onPostSync(EventPostSync e) {
         if (mc.player == null || mc.world == null) return;
 
+        /* ── anti-flag tick ──────────────────────────────────────────── */
+        tickAntiFlag();
+
+        /* ── swing spoof ─────────────────────────────────────────────── */
+        tickSwingSpoof();
+
+        /* ── velocity cap ────────────────────────────────────────────── */
+        if (velocityCap.getValue() && bypassMode.getValue() != BypassMode.Off) {
+            Vec3d vel   = mc.player.getVelocity();
+            Vec3d delta = vel.subtract(prevVelocity);
+            double dLen = delta.length();
+            double cap  = maxVelDelta.getValue();
+            if (dLen > cap) {
+                mc.player.setVelocity(prevVelocity.add(delta.normalize().multiply(cap)));
+            }
+            prevVelocity = mc.player.getVelocity();
+        }
+
+        /* ── Matrix stagger sayacı ───────────────────────────────────── */
+        if (bypassMode.getValue() == BypassMode.Matrix) matrixAttackTick++;
+
+        /* ── fake lag tick ───────────────────────────────────────────── */
+        tickFakeLag();
+
         Entity  target      = Aura.target;
         boolean validTarget = target != null
                 && PlayerUtility.squaredDistanceFromEyes(target.getPos())
@@ -103,44 +279,190 @@ public final class ElytraTarget extends Module {
 
         boolean flying = mc.player.isFallFlying();
 
-        /* uçmuyorsa ve OnlyWhenFlying açıksa orbit state'ini temizle — takılma önlemi */
         if (onlyWhenFlying.getValue() && !flying) {
             orbitReady = false;
             return;
         }
 
-        /* rotation + orbit */
+        /* ── rotation + orbit ──────────────────────────────────────────── */
         if (followTarget.getValue() && validTarget) {
             followAndOrbit(target);
         } else {
-            /* hedef kayboldu: orbit sıfırla, bir sonraki hedefte geçiş pürüzsüz olsun */
             orbitReady = false;
         }
 
-        /* kılıç seçimi */
+        /* ── paket birleştirme flush ─────────────────────────────────── */
+        flushPendingFullPacket();
+
+        /* ── kılıç seçimi ──────────────────────────────────────────────── */
         if (autoSharpestSword.getValue() && validTarget) {
             SearchInvResult sword = InventoryUtility.getHighestSharpnessSwordHotBar();
             if (sword.found() && mc.player.getInventory().selectedSlot != sword.slot())
-                sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
+                queueOrSend(new UpdateSelectedSlotC2SPacket(sword.slot()));
         }
 
-        /* kritik vuruş */
-        if (autoCrit.getValue() && validTarget && critTimer.passedMs(200)) {
-            doCritPacket();
-            critTimer.reset();
+        /* ── kritik vuruş ──────────────────────────────────────────────── */
+        if (autoCrit.getValue() && validTarget && !isFlagged()) {
+            boolean matrixReady = bypassMode.getValue() != BypassMode.Matrix
+                    || matrixAttackTick >= attackStagger.getValue();
+            if (critTimer.passedMs(applyJitter(200)) && matrixReady) {
+                doCritPacket();
+                critTimer.reset();
+                if (bypassMode.getValue() == BypassMode.Matrix) matrixAttackTick = 0;
+            }
         }
 
-        /* fişek */
+        /* ── ROCKET ────────────────────────────────────────────────────── */
         if (!rocketBoost.getValue()) return;
-        if (!alwaysBoost.getValue() && !validTarget) return;
-        if (!instantFire.getValue() && !rocketTimer.passedMs(rocketDelay.getValue())) return;
 
-        for (int i = 0; i < rocketBurst.getValue(); i++) fireRocket();
+        boolean shouldBoost = flying && (
+                alwaysBoost.getValue()
+                || validTarget
+                || mc.player.getVelocity().y < -0.10
+                || mc.player.getVelocity().length() < 0.40);
+
+        if (!shouldBoost) return;
+
+        /* flag aktifse roket tetikleme */
+        if (isFlagged()) return;
+
+        boolean isFirst = firstTick;
+        firstTick = false;
+
+        if (!isFirst) {
+            long delay = instantFire.getValue()
+                    ? applyJitter(150L)
+                    : applyJitter((long)(int) rocketDelay.getValue());
+            if (!rocketTimer.passedMs(delay)) return;
+        }
+
+        int burst = lagPhaseOn ? 1 : rocketBurst.getValue();
+        for (int i = 0; i < burst; i++) fireRocket();
         rocketTimer.reset();
     }
 
     /* ═══════════════════════════════════════════════════════════════════════
-       ROTATION + ORBIT — smooth EMA tabanlı, stutter yok
+       ANTI-FLAG
+    ═══════════════════════════════════════════════════════════════════════ */
+
+    private void tickAntiFlag() {
+        if (!antiFlag.getValue() || bypassMode.getValue() == BypassMode.Off) {
+            flagged = false;
+            return;
+        }
+
+        Vec3d vel = mc.player.getVelocity();
+        boolean rubberBand =
+                prevVelocity.length() > 0.15
+                && vel.length() < 0.05
+                && !mc.player.isOnGround();
+
+        if (rubberBand && !flagged) {
+            flagged           = true;
+            flagCooldownAccum = 0;
+        }
+
+        if (flagged) {
+            flagCooldownAccum++;
+            if (flagCooldownAccum >= flagCooldown.getValue()) {
+                flagged           = false;
+                flagCooldownAccum = 0;
+            }
+        }
+    }
+
+    private boolean isFlagged() {
+        return antiFlag.getValue()
+                && bypassMode.getValue() != BypassMode.Off
+                && flagged;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       SWING SPOOF
+    ═══════════════════════════════════════════════════════════════════════ */
+
+    private void tickSwingSpoof() {
+        if (!swingSpoof.getValue() || bypassMode.getValue() == BypassMode.Off) return;
+        swingTickAccum++;
+        if (swingTickAccum >= swingInterval.getValue()) {
+            sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
+            swingTickAccum = 0;
+        }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       TIMING JITTER
+    ═══════════════════════════════════════════════════════════════════════ */
+
+    private long applyJitter(long baseMs) {
+        if (!timingJitter.getValue() || bypassMode.getValue() == BypassMode.Off)
+            return baseMs;
+        int range = jitterRange.getValue();
+        long delta = (long)(ThreadLocalRandom.current().nextInt(range * 2 + 1) - range);
+        return Math.max(50L, baseMs + delta);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       PACKET COALESCE
+    ═══════════════════════════════════════════════════════════════════════ */
+
+    private void coalesceOrSend(PlayerMoveC2SPacket.Full pkt) {
+        if (packetCoalesce.getValue() && bypassMode.getValue() != BypassMode.Off) {
+            pendingFullPacket = pkt;
+        } else {
+            queueOrSend(pkt);
+        }
+    }
+
+    private void flushPendingFullPacket() {
+        if (pendingFullPacket != null) {
+            queueOrSend(pendingFullPacket);
+            pendingFullPacket = null;
+        }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       FAKE LAG
+    ═══════════════════════════════════════════════════════════════════════ */
+
+    private void tickFakeLag() {
+        if (!fakeLag.getValue()) {
+            if (!lagQueue.isEmpty()) flushLagQueue();
+            lagPhaseOn   = false;
+            lagTickAccum = 0;
+            return;
+        }
+
+        if (!lagPhaseOn && lagCycleTimer.passedMs((long)(int) lagInterval.getValue() * 1000L)) {
+            lagPhaseOn   = true;
+            lagTickAccum = 0;
+        }
+
+        if (lagPhaseOn) {
+            lagTickAccum++;
+            if (lagTickAccum >= lagTicks.getValue()) {
+                flushLagQueue();
+                lagPhaseOn   = false;
+                lagTickAccum = 0;
+                lagCycleTimer.reset();
+            }
+        }
+    }
+
+    private void queueOrSend(Packet<?> packet) {
+        if (fakeLag.getValue() && lagPhaseOn) {
+            lagQueue.addLast(packet);
+        } else {
+            sendPacket(packet);
+        }
+    }
+
+    private void flushLagQueue() {
+        while (!lagQueue.isEmpty()) sendPacket(lagQueue.pollFirst());
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       ROTATION + ORBIT
     ═══════════════════════════════════════════════════════════════════════ */
 
     private void followAndOrbit(Entity target) {
@@ -149,7 +471,6 @@ public final class ElytraTarget extends Module {
         float radius  = orbitRadius.getValue();
         float speed   = followSpeed.getValue();
 
-        /* intercept: hedef de elytra ile uçuyorsa önüne geç */
         Vec3d predicted = tPos;
         if (interceptTarget.getValue()
                 && target instanceof net.minecraft.entity.LivingEntity le
@@ -161,19 +482,14 @@ public final class ElytraTarget extends Module {
 
         orbitAngle += 0.04 * speed;
 
-        /* ham orbit noktası */
         double rawX = predicted.x + Math.cos(orbitAngle) * radius;
         double rawZ = predicted.z + Math.sin(orbitAngle) * radius;
         double rawY = predicted.y + 2.0;
 
-        /*
-         * Exponential Moving Average — orbit merkezi sürekli sıçramak yerine
-         * smooth kayar. k ne kadar küçükse o kadar yavaş/soft geçiş.
-         */
         if (!orbitReady) {
-            smoothX = (float) rawX;
-            smoothY = (float) rawY;
-            smoothZ = (float) rawZ;
+            smoothX    = (float) rawX;
+            smoothY    = (float) rawY;
+            smoothZ    = (float) rawZ;
             orbitReady = true;
         } else {
             float k = MathHelper.clamp(speed * 0.12f, 0.04f, 0.30f);
@@ -182,147 +498,4 @@ public final class ElytraTarget extends Module {
             smoothZ += (rawZ - smoothZ) * k;
         }
 
-        /* yön vektörü */
-        double dx    = smoothX - mc.player.getX();
-        double dy    = smoothY - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
-        double dz    = smoothZ - mc.player.getZ();
-        double hDist = Math.sqrt(dx * dx + dz * dz);
-        if (hDist < 1e-4) return; // çok yakın — işlem atla
-
-        float tYaw   = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90f;
-        float tPitch = MathHelper.clamp((float) -Math.toDegrees(Math.atan2(dy, hDist)), -90f, 90f);
-
-        float cYaw   = mc.player.getYaw();
-        float cPitch = mc.player.getPitch();
-
-        /* GCD — mouse sensitivity ile tutarlı adım büyüklüğü */
-        double sens  = mc.options.getMouseSensitivity().getValue() * 0.6 + 0.2;
-        double gcd   = Math.pow(sens, 3.0) * 1.2;
-
-        /* lerp hızı: speed arttıkça daha ani dönüş, ama çok sert olmasın */
-        float lerpT    = MathHelper.clamp(speed * 0.22f, 0.05f, 0.45f);
-        float rawYaw   = cYaw   + MathHelper.wrapDegrees(tYaw   - cYaw)   * lerpT;
-        float rawPitch = cPitch + MathHelper.wrapDegrees(tPitch - cPitch) * lerpT;
-        rawPitch = MathHelper.clamp(rawPitch, -90f, 90f);
-
-        /* ── BYPASS: GCD align + human-like noise ─────────────────────── */
-        float finalYaw, finalPitch;
-        if (bypassMode.getValue() != BypassMode.Off) {
-            /*
-             * GrimAC / NCP / Polar hepsi "perfect" (tam tam tam) rotasyonu flag'ler.
-             * GCD'ye hizalanmış rotation mouse hareketiyle aynı pattern'i üretir.
-             */
-            finalYaw   = (float)(rawYaw   - (rawYaw   - cYaw)   % gcd);
-            finalPitch = (float)(rawPitch - (rawPitch - cPitch) % gcd);
-
-            if (rotationNoise.getValue()) {
-                float n  = noiseStrength.getValue();
-                float yn = (float)(Math.round(
-                        (ThreadLocalRandom.current().nextFloat() * n * 2f - n) / gcd) * gcd);
-                float pn = (float)(Math.round(
-                        (ThreadLocalRandom.current().nextFloat() * n - n * 0.5f) / gcd) * gcd);
-                finalYaw   += yn;
-                finalPitch  = MathHelper.clamp(finalPitch + pn, -90f, 90f);
-            }
-        } else {
-            finalYaw   = rawYaw;
-            finalPitch = rawPitch;
-        }
-
-        /* client-side rotation (ESP, clientLook vb. için) */
-        mc.player.setYaw(finalYaw);
-        mc.player.setPitch(finalPitch);
-
-        /*
-         * BYPASS — server'a Full movement paketi gönder.
-         * Sıradan elytra uçuşunda sadece position/onGround gönderilir.
-         * Burada rotation'ı da içeren Full paketi göndererek sunucunun
-         * rotation track'ini biz kontrol ediyoruz — anti-cheat rotation
-         * tutarsızlığını göremez.
-         */
-        if (bypassMode.getValue() != BypassMode.Off && sendFullPacket.getValue()) {
-            sendPacket(new PlayerMoveC2SPacket.Full(
-                    mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                    finalYaw, finalPitch,
-                    mc.player.isOnGround()));
-        }
-    }
-
-    /* ═══════════════════════════════════════════════════════════════════════
-       KRİTİK VURUŞ
-    ═══════════════════════════════════════════════════════════════════════ */
-
-    private void doCritPacket() {
-        if (mc.player.isInLava() || mc.player.isSubmergedInWater()) return;
-        switch (critMode.getValue()) {
-            case Packet -> {
-                sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(
-                        mc.player.getX(), mc.player.getY() + 0.000000271875, mc.player.getZ(), false));
-                sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(
-                        mc.player.getX(), mc.player.getY(), mc.player.getZ(), false));
-            }
-            case Strict -> {
-                sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(
-                        mc.player.getX(), mc.player.getY() + 0.062600301692775, mc.player.getZ(), false));
-                sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(
-                        mc.player.getX(), mc.player.getY() + 0.07260029960661, mc.player.getZ(), false));
-                sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(
-                        mc.player.getX(), mc.player.getY(), mc.player.getZ(), false));
-            }
-        }
-    }
-
-    /* ═══════════════════════════════════════════════════════════════════════
-       ROCKET
-    ═══════════════════════════════════════════════════════════════════════ */
-
-    private void fireRocket() {
-        SearchInvResult rocketHotbar = InventoryUtility.findItemInHotBar(Items.FIREWORK_ROCKET);
-        int rocketSlot = rocketHotbar.slot();
-
-        if (rocketSlot == -1) {
-            if (!autoSwitchRocket.getValue()) return;
-            SearchInvResult rocketAnywhere = InventoryUtility.findItemInInventory(Items.FIREWORK_ROCKET);
-            if (!rocketAnywhere.found() || rocketAnywhere.isInHotBar()) return;
-
-            int emptyHotbarSlot = -1;
-            for (int i = 0; i < 9; i++) {
-                if (mc.player.getInventory().getStack(i).isEmpty()) {
-                    emptyHotbarSlot = i;
-                    break;
-                }
-            }
-            if (emptyHotbarSlot == -1) return;
-
-            clickSlot(rocketAnywhere.slot(), emptyHotbarSlot, SlotActionType.SWAP);
-            rocketSlot = emptyHotbarSlot;
-        }
-
-        int     prevSlot = mc.player.getInventory().selectedSlot;
-        boolean swap     = prevSlot != rocketSlot;
-
-        if (silentRockets.getValue()) {
-            if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
-        } else {
-            if (swap) InventoryUtility.switchTo(rocketSlot);
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-        }
-    }
-
-    /* ═══════════════════════════════════════════════════════════════════════
-       ENUM
-    ═══════════════════════════════════════════════════════════════════════ */
-
-    public enum CritMode   { Packet, Strict }
-
-    public enum BypassMode {
-        /** Bypass yok — vanilla davranış                        */ Off,
-        /** GCD fix + noise + Full packet (GrimAC, Anticheat++)  */ GrimAC,
-        /** GCD fix + timing offset (NoCheatPlus, Spartan)       */ NCP,
-        /** GCD fix + geniş noise (Polar, Matrix)                */ Polar
-    }
-}
+        d
