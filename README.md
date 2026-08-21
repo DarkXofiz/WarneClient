@@ -1,1 +1,1 @@
-Büyük Keller icin gelistirilmistir gotu ölü olanlar icin
+Büyük Keller icin gelistirilmistir gotu odlu lanlar icin
