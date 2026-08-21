@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "warneclient",
+  "version": "${version}",
+  "icon": "icon.png",
+  "name": "Warne Client",
+  "description": "Player Assistance Mod",
+  "authors": [
+    {
+      "name": "Yukile394",
+      "contact": {
+        "discord": "yukile394"
+      }
+    }
+  ],
+  "license": "GNU General Public License v3.0",
+  "accessWidener": "warneclient.accesswidener",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "warne.client.WarneClient"
+    ]
+  },
+  "contact": {
+    "sources": "https://github.com/Yukile394/WarneClient",
+    "homepage": "https://github.com/Yukile394/WarneClient"
+  },
+  "mixins": [
+    "warneclient.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "~1.21",
+    "java": ">=21"
+  },
+  "suggests": {
+    "sodium": "*",
+    "exordium": "*",
+    "starlight": "*",
+    "ias": "*",
+    "viafabricplus": "*"
+  }
+}

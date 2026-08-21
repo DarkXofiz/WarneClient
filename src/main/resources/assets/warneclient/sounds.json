@@ -1,0 +1,92 @@
+{
+  "keypress": {
+    "sounds": [
+      "warneclient:keypress"
+    ]
+  },
+  "keyrelease": {
+    "sounds": [
+      "warneclient:keyrelease"
+    ]
+  },
+  "uwu": {
+    "sounds": [
+      "warneclient:uwu"
+    ]
+  },
+  "disable": {
+    "sounds": [
+      "warneclient:disable"
+    ]
+  },
+  "enable": {
+    "sounds": [
+      "warneclient:enable"
+    ]
+  },
+  "moan1": {
+    "sounds": [
+      "warneclient:moan1"
+    ]
+  },
+  "moan2": {
+    "sounds": [
+      "warneclient:moan2"
+    ]
+  },
+  "moan3": {
+    "sounds": [
+      "warneclient:moan3"
+    ]
+  },
+  "moan4": {
+    "sounds": [
+      "warneclient:moan4"
+    ]
+  },
+  "skeet": {
+    "sounds": [
+      "warneclient:skeet"
+    ]
+  },
+  "orthodox": {
+    "sounds": [
+      "warneclient:orthodox"
+    ]
+  },
+  "boolean": {
+    "sounds": [
+      "warneclient:boolean"
+    ]
+  },
+  "scroll": {
+    "sounds": [
+      "warneclient:scroll"
+    ]
+  },
+  "swipein": {
+    "sounds": [
+      "warneclient:swipein"
+    ]
+  },
+  "swipeout": {
+    "sounds": [
+      "warneclient:swipeout"
+    ]
+  },
+  "pmsound": {
+    "sounds": [
+      "warneclient:pmsound"
+    ]
+  },
+  "rifk": {
+    "sounds": [
+      "warneclient:rifk"
+    ]
+  },
+  "cutie": {
+    "sounds": [
+      "warneclient:cutie"
+    ]
+  }
+}
