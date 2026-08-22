@@ -25,7 +25,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public final class ElytraTarget extends Module {
 
-    public enum CritMode  { Packet, Strict }
+    public enum CritMode   { Packet, Strict }
     public enum BypassMode { Off, GrimAC }
 
     /* ── ROCKET ─────────────────────────────────────────────────────────── */
@@ -43,11 +43,6 @@ public final class ElytraTarget extends Module {
     private final Setting<Boolean> alwaysBoost      = new Setting<>("AlwaysBoost", true,
             v -> rocketBoost.getValue());
 
-    /* ── KILIČ + FİŞEK DÖNGÜSÜ ─────────────────────────────────────────── */
-    private final Setting<Boolean> swordRocketCycle = new Setting<>("SwordRocketCycle", true);
-    private final Setting<Integer> cycleInterval    = new Setting<>("CycleIntervalTicks", 20, 5, 100,
-            v -> swordRocketCycle.getValue());
-
     /* ── FAKE LAG ────────────────────────────────────────────────────────── */
     private final Setting<Boolean> fakeLag     = new Setting<>("FakeLag", false);
     private final Setting<Integer> lagTicks    = new Setting<>("LagTicks", 8, 2, 20,
@@ -56,22 +51,16 @@ public final class ElytraTarget extends Module {
             v -> fakeLag.getValue());
 
     /* ── HEDEF ──────────────────────────────────────────────────────────── */
-    private final Setting<Float>   targetRange     = new Setting<>("TargetRange", 64f, 5f, 128f);
-    private final Setting<Boolean> onlyWhenFlying  = new Setting<>("OnlyWhenFlying", true);
-    private final Setting<Boolean> followTarget    = new Setting<>("FollowTarget", true);
-    private final Setting<Float>   followSpeed     = new Setting<>("FollowSpeed", 0.8f, 0.1f, 3.0f,
+    private final Setting<Float>   targetRange      = new Setting<>("TargetRange", 64f, 5f, 128f);
+    private final Setting<Boolean> onlyWhenFlying   = new Setting<>("OnlyWhenFlying", true);
+    private final Setting<Boolean> followTarget     = new Setting<>("FollowTarget", true);
+    private final Setting<Float>   followSpeed      = new Setting<>("FollowSpeed", 0.8f, 0.1f, 3.0f,
             v -> followTarget.getValue());
-    private final Setting<Float>   orbitRadius     = new Setting<>("OrbitRadius", 4.0f, 1.0f, 15.0f,
+    private final Setting<Float>   orbitRadius      = new Setting<>("OrbitRadius", 4.0f, 1.0f, 15.0f,
             v -> followTarget.getValue());
-    private final Setting<Boolean> interceptTarget = new Setting<>("InterceptTarget", true,
+    private final Setting<Boolean> interceptTarget  = new Setting<>("InterceptTarget", true,
             v -> followTarget.getValue());
-
-    /*
-     * MinOrbitDistance: oyuncu hedefe bu blok mesafesinden yaklaşırsa orbit
-     * hesabı duraklar ve oyuncu kendi ivmesiyle uzaklaşır.
-     * Bu değer orbitRadius'tan küçük olmalı.
-     */
-    private final Setting<Float> minOrbitDistance = new Setting<>("MinOrbitDistance", 2.5f, 1.0f, 8.0f,
+    private final Setting<Float>   minOrbitDistance = new Setting<>("MinOrbitDistance", 3.0f, 1.0f, 8.0f,
             v -> followTarget.getValue());
 
     /* ── KRİTİK VURUŞ ───────────────────────────────────────────────────── */
@@ -83,12 +72,12 @@ public final class ElytraTarget extends Module {
     private final Setting<Boolean> autoSharpestSword = new Setting<>("AutoSwitchToSharpestSword", true);
 
     /* ── BYPASS ─────────────────────────────────────────────────────────── */
-    private final Setting<BypassMode> bypassMode    = new Setting<>("BypassMode", BypassMode.GrimAC);
-    private final Setting<Boolean>  rotationNoise   = new Setting<>("RotationNoise", true,
+    private final Setting<BypassMode> bypassMode  = new Setting<>("BypassMode", BypassMode.GrimAC);
+    private final Setting<Boolean> rotationNoise  = new Setting<>("RotationNoise", true,
             v -> bypassMode.getValue() != BypassMode.Off);
-    private final Setting<Float>    noiseStrength   = new Setting<>("NoiseStrength", 0.12f, 0.01f, 0.8f,
+    private final Setting<Float>   noiseStrength  = new Setting<>("NoiseStrength", 0.12f, 0.01f, 0.8f,
             v -> bypassMode.getValue() != BypassMode.Off && rotationNoise.getValue());
-    private final Setting<Boolean>  sendRotPacket   = new Setting<>("SendRotationPacket", true,
+    private final Setting<Boolean> sendRotPacket  = new Setting<>("SendRotationPacket", true,
             v -> bypassMode.getValue() != BypassMode.Off);
 
     /* ── STATE ──────────────────────────────────────────────────────────── */
@@ -109,16 +98,7 @@ public final class ElytraTarget extends Module {
     private float lastSentPitch = Float.NaN;
 
     private boolean firstTick = false;
-
-    /* SwordRocketCycle */
-    private int  cycleTickAccum = 0;
-
-    /*
-     * manualSlotOverride: oyuncu son tick içinde kendi iradesiyle slot
-     * değiştirdiyse true olur.  Bu tick boyunca cycle slot'a dokunmaz.
-     * Bir sonraki tickte sıfırlanır.
-     */
-    private int lastPlayerSlot = -1;
+    private int     slotToRestore = 0;
 
     public ElytraTarget() {
         super("ElytraTarget", Category.COMBAT);
@@ -130,18 +110,17 @@ public final class ElytraTarget extends Module {
 
     @Override
     public void onEnable() {
-        orbitReady     = false;
-        orbitAngle     = 0;
-        firstTick      = true;
-        lagPhaseOn     = false;
-        lagTickAccum   = 0;
-        lastSentYaw    = Float.NaN;
-        lastSentPitch  = Float.NaN;
-        cycleTickAccum = 0;
-        lastPlayerSlot = mc.player != null ? mc.player.getInventory().selectedSlot : -1;
+        orbitReady    = false;
+        orbitAngle    = 0;
+        firstTick     = true;
+        lagPhaseOn    = false;
+        lagTickAccum  = 0;
+        lastSentYaw   = Float.NaN;
+        lastSentPitch = Float.NaN;
         lagQueue.clear();
         rocketTimer.reset();
         lagCycleTimer.reset();
+        if (mc.player != null) slotToRestore = mc.player.getInventory().selectedSlot;
     }
 
     @Override
@@ -161,6 +140,8 @@ public final class ElytraTarget extends Module {
     public void onPostSync(EventPostSync e) {
         if (mc.player == null || mc.world == null) return;
 
+        slotToRestore = mc.player.getInventory().selectedSlot;
+
         tickFakeLag();
 
         Entity  target      = Aura.target;
@@ -175,114 +156,25 @@ public final class ElytraTarget extends Module {
             return;
         }
 
-        /* ── rotation + orbit ──────────────────────────────────────────── */
         if (followTarget.getValue() && validTarget) {
             followAndOrbit(target);
         } else {
             orbitReady = false;
         }
 
-        /* ── kılıç seçimi ──────────────────────────────────────────────── */
-        /*
-         * Cycle kapalıysa veya slot kilidi yoksa sadece hedef varken bir kez
-         * slot set et.  Her tick zorlamak oyuncunun slot değiştirmesini engeller.
-         */
-        if (!swordRocketCycle.getValue() && autoSharpestSword.getValue() && validTarget) {
+        if (autoSharpestSword.getValue() && validTarget) {
             SearchInvResult sword = InventoryUtility.getHighestSharpnessSwordHotBar();
-            if (sword.found() && mc.player.getInventory().selectedSlot != sword.slot())
-                queueOrSend(new UpdateSelectedSlotC2SPacket(sword.slot()));
+            if (sword.found() && slotToRestore != sword.slot()) {
+                sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
+                sendPacket(new UpdateSelectedSlotC2SPacket(slotToRestore));
+            }
         }
 
-        /* ── kılıç-fişek döngüsü ───────────────────────────────────────── */
-        if (swordRocketCycle.getValue() && flying) {
-            tickSwordRocketCycle();
-        }
-
-        /* ── kritik vuruş ──────────────────────────────────────────────── */
         if (autoCrit.getValue() && validTarget && critTimer.passedMs(200)) {
             doCritPacket();
             critTimer.reset();
         }
 
-        /* ── roket (cycle kapalıyken) ───────────────────────────────────── */
-        if (!swordRocketCycle.getValue()) {
-            tickRocket(flying, validTarget);
-        }
-    }
-
-    /* ═══════════════════════════════════════════════════════════════════════
-       KILIČ-FİŞEK DÖNGÜSÜ
-       ─────────────────────────────────────────────────────────────────────
-       Oyuncunun görsel slotuna HİÇ dokunmaz.
-       Kılıç seçimi: sadece roket ateşlemeden ÖNCE kılıca dönmek için
-       kullanılır, o da silent (paket) olarak.
-       Roket zamanı gelince:
-         1. Mevcut slotu kaydet.
-         2. Sunucuya fişek slotunu gönder.
-         3. Interact paketi gönder.
-         4. Sunucuya eski slotu gönder.
-       Client tarafında selectedSlot hiç değişmez → oyuncu özgürce slot değiştirebilir.
-    ═══════════════════════════════════════════════════════════════════════ */
-
-    private void tickSwordRocketCycle() {
-        cycleTickAccum++;
-        if (cycleTickAccum < cycleInterval.getValue()) return;
-        cycleTickAccum = 0;
-
-        /* Fişeği bul */
-        SearchInvResult rocketResult = InventoryUtility.findItemInHotBar(Items.FIREWORK_ROCKET);
-        int rocketSlot = rocketResult.slot();
-
-        if (rocketSlot == -1) {
-            if (!autoSwitchRocket.getValue()) return;
-            SearchInvResult anywhere = InventoryUtility.findItemInInventory(Items.FIREWORK_ROCKET);
-            if (!anywhere.found() || anywhere.isInHotBar()) return;
-            int emptySlot = -1;
-            for (int i = 0; i < 9; i++) {
-                if (mc.player.getInventory().getStack(i).isEmpty()) { emptySlot = i; break; }
-            }
-            if (emptySlot == -1) return;
-            clickSlot(anywhere.slot(), emptySlot, SlotActionType.SWAP);
-            rocketSlot = emptySlot;
-        }
-
-        /* Kılıcı bul — eğer autoSharpestSword açıksa roket öncesinde kılıca
-           silent geç, interact et, geri dön.  Görsel slot DEĞİŞMEZ. */
-        int clientSlot = mc.player.getInventory().selectedSlot; // oyuncunun gördüğü slot
-
-        if (autoSharpestSword.getValue()) {
-            SearchInvResult sword = InventoryUtility.getHighestSharpnessSwordHotBar();
-            if (sword.found() && clientSlot != sword.slot()) {
-                /* Sunucuya kılıç slotunu bildir ama client'ta tutma */
-                sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
-                /* Kılıç seçili haldeyken interact etmiyoruz; sadece slot
-                   sunucuya bildirildi.  Aura zaten kendi vurma mantığını
-                   çalıştırır.  Şimdi fişek zamanına geç. */
-                sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-                sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                        Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-                /* Client slotuna dön */
-                sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
-                return;
-            }
-        }
-
-        /* Kılıç zaten seçili ya da autoSharpestSword kapalı — sadece fişeği ateşle */
-        if (clientSlot != rocketSlot)
-            sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-
-        sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-
-        if (clientSlot != rocketSlot)
-            sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
-    }
-
-    /* ═══════════════════════════════════════════════════════════════════════
-       ROCKET (cycle kapalıyken)
-    ═══════════════════════════════════════════════════════════════════════ */
-
-    private void tickRocket(boolean flying, boolean validTarget) {
         if (!rocketBoost.getValue()) return;
 
         boolean shouldBoost = flying && (
@@ -317,12 +209,10 @@ public final class ElytraTarget extends Module {
             lagTickAccum = 0;
             return;
         }
-
         if (!lagPhaseOn && lagCycleTimer.passedMs((long)(int) lagInterval.getValue() * 1000L)) {
             lagPhaseOn   = true;
             lagTickAccum = 0;
         }
-
         if (lagPhaseOn) {
             lagTickAccum++;
             if (lagTickAccum >= lagTicks.getValue()) {
@@ -345,10 +235,6 @@ public final class ElytraTarget extends Module {
 
     /* ═══════════════════════════════════════════════════════════════════════
        ROTATION + ORBIT
-       ─────────────────────────────────────────────────────────────────────
-       DÜZELTME: Full paket (pozisyon + rotasyon) yerine LookAndOnGround
-       (sadece rotasyon) gönderilir.  Full paket sunucunun pozisyon
-       takibini bozar ve yakın mesafede rubber-band'e yol açar.
     ═══════════════════════════════════════════════════════════════════════ */
 
     private void followAndOrbit(Entity target) {
@@ -357,20 +243,12 @@ public final class ElytraTarget extends Module {
         float radius  = orbitRadius.getValue();
         float speed   = followSpeed.getValue();
 
-        /*
-         * YAKINA GİRME KORUMASI
-         * Oyuncu hedefe minOrbitDistance'tan yakınsa orbit hesabı atlanır.
-         * Bu sayede oyuncu hedefe çarpıp elytrası kapanmaz.
-         */
-        double distSq = PlayerUtility.squaredDistanceFromEyes(tPos);
-        double minDst = minOrbitDistance.getValue();
-        if (distSq < minDst * minDst) {
-            orbitReady = false;
-            return;
-        }
+        double distSq  = PlayerUtility.squaredDistanceFromEyes(tPos);
+        double minD    = minOrbitDistance.getValue();
+        boolean tooClose = distSq < minD * minD;
 
         Vec3d predicted = tPos;
-        if (interceptTarget.getValue()
+        if (!tooClose && interceptTarget.getValue()
                 && target instanceof net.minecraft.entity.LivingEntity le
                 && le.isFallFlying()) {
             double dist  = Math.sqrt(distSq);
@@ -380,14 +258,25 @@ public final class ElytraTarget extends Module {
 
         orbitAngle += 0.04 * speed;
 
-        double rawX = predicted.x + Math.cos(orbitAngle) * radius;
-        double rawZ = predicted.z + Math.sin(orbitAngle) * radius;
-        double rawY = predicted.y + 2.0;
+        double rawX, rawY, rawZ;
+
+        if (tooClose) {
+            double ex  = mc.player.getX() - tPos.x;
+            double ez  = mc.player.getZ() - tPos.z;
+            double len = Math.sqrt(ex * ex + ez * ez);
+            if (len < 1e-4) { ex = Math.cos(orbitAngle); ez = Math.sin(orbitAngle); len = 1.0; }
+            double escR = radius * 2.0 + minD;
+            rawX = tPos.x + (ex / len) * escR;
+            rawZ = tPos.z + (ez / len) * escR;
+            rawY = mc.player.getY() + 2.0;
+        } else {
+            rawX = predicted.x + Math.cos(orbitAngle) * radius;
+            rawZ = predicted.z + Math.sin(orbitAngle) * radius;
+            rawY = predicted.y + 2.0;
+        }
 
         if (!orbitReady) {
-            smoothX    = (float) rawX;
-            smoothY    = (float) rawY;
-            smoothZ    = (float) rawZ;
+            smoothX = (float) rawX; smoothY = (float) rawY; smoothZ = (float) rawZ;
             orbitReady = true;
         } else {
             float k = MathHelper.clamp(speed * 0.12f, 0.04f, 0.30f);
@@ -420,15 +309,13 @@ public final class ElytraTarget extends Module {
         if (bypassMode.getValue() != BypassMode.Off) {
             finalYaw   = (float)(rawYaw   - (rawYaw   - cYaw)   % gcd);
             finalPitch = (float)(rawPitch - (rawPitch - cPitch) % gcd);
-
             if (rotationNoise.getValue()) {
-                float n  = noiseStrength.getValue();
-                float yn = (float)(Math.round(
+                float n = noiseStrength.getValue();
+                finalYaw  += (float)(Math.round(
                         (ThreadLocalRandom.current().nextFloat() * n * 2f - n) / gcd) * gcd);
-                float pn = (float)(Math.round(
-                        (ThreadLocalRandom.current().nextFloat() * n - n * 0.5f) / gcd) * gcd);
-                finalYaw   += yn;
-                finalPitch  = MathHelper.clamp(finalPitch + pn, -90f, 90f);
+                finalPitch = MathHelper.clamp(finalPitch + (float)(Math.round(
+                        (ThreadLocalRandom.current().nextFloat() * n - n * 0.5f) / gcd) * gcd),
+                        -90f, 90f);
             }
         } else {
             finalYaw   = rawYaw;
@@ -438,20 +325,11 @@ public final class ElytraTarget extends Module {
         mc.player.setYaw(finalYaw);
         mc.player.setPitch(finalPitch);
 
-        /*
-         * DÜZELTME: Full yerine LookAndOnGround kullan.
-         * Full paketi pozisyon da içerir; sunucu bunu "oyuncu burada" diye
-         * işler ve yakın mesafede çakışma varsa rubber-band atar.
-         * LookAndOnGround sadece rotasyonu günceller, pozisyona dokunmaz.
-         */
         if (bypassMode.getValue() != BypassMode.Off && sendRotPacket.getValue()) {
             float baseYaw   = Float.isNaN(lastSentYaw)   ? cYaw   : lastSentYaw;
             float basePitch = Float.isNaN(lastSentPitch) ? cPitch : lastSentPitch;
-
-            float dYaw   = Math.abs(MathHelper.wrapDegrees(finalYaw   - baseYaw));
-            float dPitch = Math.abs(MathHelper.wrapDegrees(finalPitch - basePitch));
-
-            if (dYaw > 0.5f || dPitch > 0.3f) {
+            if (Math.abs(MathHelper.wrapDegrees(finalYaw   - baseYaw))   > 0.5f
+             || Math.abs(MathHelper.wrapDegrees(finalPitch - basePitch)) > 0.3f) {
                 queueOrSend(new PlayerMoveC2SPacket.LookAndOnGround(
                         finalYaw, finalPitch, mc.player.isOnGround()));
                 lastSentYaw   = finalYaw;
@@ -494,41 +372,23 @@ public final class ElytraTarget extends Module {
 
         if (rocketSlot == -1) {
             if (!autoSwitchRocket.getValue()) return;
-            SearchInvResult rocketAnywhere = InventoryUtility.findItemInInventory(Items.FIREWORK_ROCKET);
-            if (!rocketAnywhere.found() || rocketAnywhere.isInHotBar()) return;
-
-            int emptyHotbarSlot = -1;
+            SearchInvResult anywhere = InventoryUtility.findItemInInventory(Items.FIREWORK_ROCKET);
+            if (!anywhere.found() || anywhere.isInHotBar()) return;
+            int emptySlot = -1;
             for (int i = 0; i < 9; i++) {
-                if (mc.player.getInventory().getStack(i).isEmpty()) {
-                    emptyHotbarSlot = i;
-                    break;
-                }
+                if (mc.player.getInventory().getStack(i).isEmpty()) { emptySlot = i; break; }
             }
-            if (emptyHotbarSlot == -1) return;
-
-            clickSlot(rocketAnywhere.slot(), emptyHotbarSlot, SlotActionType.SWAP);
-            rocketSlot = emptyHotbarSlot;
+            if (emptySlot == -1) return;
+            clickSlot(anywhere.slot(), emptySlot, SlotActionType.SWAP);
+            rocketSlot = emptySlot;
         }
 
-        int     prevSlot = mc.player.getInventory().selectedSlot;
-        boolean swap     = prevSlot != rocketSlot;
+        int clientSlot = slotToRestore;
+        boolean swap   = clientSlot != rocketSlot;
 
-        if (silentRockets.getValue()) {
-            if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
-        } else {
-            if (swap) {
-                mc.player.getInventory().selectedSlot = rocketSlot;
-                sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            }
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            if (swap) {
-                mc.player.getInventory().selectedSlot = prevSlot;
-                sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
-            }
-        }
+        if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
+        sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
+                Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
+        if (swap) sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
     }
-}
+    }
