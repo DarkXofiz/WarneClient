@@ -17,7 +17,7 @@ import warne.client.utility.player.InventoryUtility;
 import warne.client.utility.player.PlayerUtility;
 import warne.client.utility.player.SearchInvResult;
 
-public final class ElytraAura extends Module {
+public final class ElytraTarget extends Module {
 
     /* ── ENUM'LAR ───────────────────────────────────────────────────────── */
 
