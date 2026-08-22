@@ -433,45 +433,24 @@ public final class ElytraTarget extends Module {
 
         if (swordRocketCycle.getValue() && autoSharpestSword.getValue()) {
             /*
-             * Paket sırası:
-             *   1. Kılıç slotu → sunucu kılıcı görür (Aura için)
-             *   2. Fişek slotu → sunucu fişeği görür
-             *   3. Interact    → fişek ateşlenir
-             *   4. Client slotu → sunucu oyuncunun gerçek slotuna döner
+             * Sabit sıra:
+             *   1. Kılıç slotu
+             *   2. Fişek slotu
+             *   3. Fişek ateşleme
+             *   4. Oyuncunun eski slotu
              *
-             * mc.player.getInventory().selectedSlot hiç değişmez.
-             * Oyuncu scroll ile istediği slota geçebilir.
+             * Her fireRocket() çağrısında tam olarak bir kılıç -> bir fişek
+             * döngüsü uygulanır. Kılıç bulunamazsa fişek tek başına gönderilmez.
+             * Client selectedSlot değiştirilmez.
              */
             SearchInvResult sword = InventoryUtility.getHighestSharpnessSwordHotBar();
-            if (sword.found() && sword.slot() != rocketSlot) {
-                sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
-            }
-            sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
-            return;
-        }
 
-        /* Normal silent swap */
-        if (silentRockets.getValue()) {
-            if (clientSlot != rocketSlot)
-                sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            if (clientSlot != rocketSlot)
-                sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
-        } else {
-            if (clientSlot != rocketSlot) {
-                mc.player.getInventory().selectedSlot = rocketSlot;
-                sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-            }
-            sendSequencedPacket(id -> new PlayerInteractItemC2SPacket(
-                    Hand.MAIN_HAND, id, mc.player.getYaw(), mc.player.getPitch()));
-            if (clientSlot != rocketSlot) {
-                mc.player.getInventory().selectedSlot = clientSlot;
-                sendPacket(new UpdateSelectedSlotC2SPacket(clientSlot));
-            }
-        }
-    }
-}
+            if (!sword.found() || sword.slot() == rocketSlot) return;
+
+            // 1) Önce kılıç
+            sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
+
+            // 2) Sonra fişek
+            sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
+
+            // 
