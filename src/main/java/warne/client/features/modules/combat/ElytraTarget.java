@@ -111,6 +111,14 @@ public final class ElytraTarget extends Module {
 
     private boolean firstTick = false;
 
+    /*
+     * SwordRocketCycle adım sayacı.
+     * 0 → kılıç vur, 1 → fişek at, 2 → kılıç vur, 3 → fişek at, 4 → kılıç vur, 5 → fişek at
+     * Her adım bir fireRocket() çağrısında işlenir; burst kaç olursa olsun
+     * sayaç kendi sırasını takip eder.
+     */
+    private int cycleStep = 0;
+
     public ElytraTarget() {
         super("ElytraTarget", Category.COMBAT);
     }
@@ -131,6 +139,7 @@ public final class ElytraTarget extends Module {
         lagQueue.clear();
         rocketTimer.reset();
         lagCycleTimer.reset();
+        cycleStep = 0;
     }
 
     @Override
@@ -139,6 +148,7 @@ public final class ElytraTarget extends Module {
         firstTick    = false;
         lagPhaseOn   = false;
         lagTickAccum = 0;
+        cycleStep    = 0;
         flushLagQueue();
     }
 
@@ -405,7 +415,8 @@ public final class ElytraTarget extends Module {
 
     /* ═══════════════════════════════════════════════════════════════════════
        ROCKET
-       swordRocketCycle=true → her ateşlemede: kılıç (paket) → fişek → geri
+       swordRocketCycle=true → sıralı 6 adımlı döngü:
+         kılıç → fişek → kılıç → fişek → kılıç → fişek (tekrar)
        swordRocketCycle=false → normal silent swap
        Her iki durumda da client selectedSlot'a yazılmaz.
     ═══════════════════════════════════════════════════════════════════════ */
@@ -433,24 +444,11 @@ public final class ElytraTarget extends Module {
 
         if (swordRocketCycle.getValue() && autoSharpestSword.getValue()) {
             /*
-             * Sabit sıra:
-             *   1. Kılıç slotu
-             *   2. Fişek slotu
-             *   3. Fişek ateşleme
-             *   4. Oyuncunun eski slotu
+             * Sıralı döngü — her fireRocket() çağrısı bir adım ilerler:
              *
-             * Her fireRocket() çağrısında tam olarak bir kılıç -> bir fişek
-             * döngüsü uygulanır. Kılıç bulunamazsa fişek tek başına gönderilmez.
-             * Client selectedSlot değiştirilmez.
-             */
-            SearchInvResult sword = InventoryUtility.getHighestSharpnessSwordHotBar();
-
-            if (!sword.found() || sword.slot() == rocketSlot) return;
-
-            // 1) Önce kılıç
-            sendPacket(new UpdateSelectedSlotC2SPacket(sword.slot()));
-
-            // 2) Sonra fişek
-            sendPacket(new UpdateSelectedSlotC2SPacket(rocketSlot));
-
-            // 
+             *   cycleStep 0 → kılıç paketi gönder (sunucu kılıcı görür, Aura vurur)
+             *   cycleStep 1 → fişek ateşle (kılıç → fişek → client slot)
+             *   cycleStep 2 → kılıç paketi gönder
+             *   cycleStep 3 → fişek ateşle
+             *   cycleStep 4 → kılıç paketi gönder
+     
