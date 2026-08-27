@@ -53,9 +53,9 @@ public class WaterMark extends HudElement {
 
         if (mode.getValue() == Mode.Big) {
             Render2DEngine.drawHudBase(context.getMatrices(), getPosX(), getPosY(), 106, 30, HudEditor.hudRound.getValue());
-            FontRenderers.thglitch.drawString(context.getMatrices(), "WARNE CLIENT", getPosX() + 5.5, getPosY() + 5, -1);
-            FontRenderers.monsterrat.drawGradientString(context.getMatrices(), "recode", getPosX() + 35.5f, getPosY() + 21f, 1);
-            FontRenderers.settings.drawString(context.getMatrices(), "Kurucusu: Yukile", getPosX() + 5.5f, getPosY() + 22f, new Color(0x8D8D8D).getRGB());
+            FontRenderers.thglitch.drawString(context.getMatrices(), "WarneClient", getPosX() + 5.5, getPosY() + 5, -1);
+            FontRenderers.monsterrat.drawGradientString(context.getMatrices(), "Warne", getPosX() + 35.5f, getPosY() + 21f, 1);
+            FontRenderers.settings.drawString(context.getMatrices(), "Kurucusu: Taxsiw19", getPosX() + 5.5f, getPosY() + 22f, new Color(0x8D8D8D).getRGB());
             setBounds(getPosX(), getPosY(), 106, 30);
         } else if (mode.getValue() == Mode.Small) {
             if (HudEditor.hudStyle.is(HudEditor.HudStyle.Blurry)) {
